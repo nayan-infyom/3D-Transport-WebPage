@@ -1,0 +1,6 @@
+{
+  "name": "Northline Transport",
+  "description": "Premium cinematic 3D transportation and logistics platform delivering reliable freight solutions nationwide.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
