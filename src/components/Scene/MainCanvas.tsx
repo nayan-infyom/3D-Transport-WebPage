@@ -1,107 +1,81 @@
 import { Suspense, useEffect, useState } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas } from '@react-three/fiber';
+import { Environment, Lightformer } from '@react-three/drei';
 import * as THREE from 'three';
-import { TruckAssembly } from './Truck/TruckAssembly';
-import { EnvironmentMaster } from './Environment/EnvironmentMaster';
-import { CameraController } from './CameraController';
-import { LightingRig } from './LightingRig';
-import { EffectComposer, Bloom, Vignette, DepthOfField } from '@react-three/postprocessing';
-
-// Create a component specifically to animate scene properties
-function SceneAnimator({ scrollProgress }: { scrollProgress: number }) {
-  useFrame(({ scene }) => {
-    if (scene.fog && scene.fog instanceof THREE.FogExp2) {
-      let targetFogColor = new THREE.Color('#F3EFE6'); // Daylight
-
-      if (scrollProgress < 0.25) {
-        targetFogColor = new THREE.Color('#455A64'); // Warehouse
-      } else if (scrollProgress >= 0.25 && scrollProgress < 0.65) {
-        targetFogColor = new THREE.Color('#F3EFE6'); // Day
-      } else if (scrollProgress >= 0.65 && scrollProgress < 0.85) {
-        targetFogColor = new THREE.Color('#5D4037'); // Sunset
-      } else if (scrollProgress >= 0.85) {
-        targetFogColor = new THREE.Color('#1A252F'); // Night Port
-      }
-
-      scene.fog.color.lerp(targetFogColor, 0.05);
-    }
-  });
-  return null;
-}
-
-interface MainCanvasProps {
-  scrollProgress: number;
-  mouseCoords: { x: number; y: number };
-}
+import { QUALITY_PRESETS, detectQualityTier, type QualityTier } from '../../config/quality';
+import { getWorld } from '../../systems/World';
+import { EnvironmentRoot } from './Environment/EnvironmentRoot';
+import { LightingRig } from './Lighting/LightingRig';
+import { PostFX } from './Effects/PostFX';
+import { TruckRig } from './Truck/TruckRig';
+import { WorldRunner } from './WorldRunner';
 
 /**
- * Main 3D Canvas Scene Root
- * Configures WebGL ACES Filmic tone mapping, calibrated daylight atmospheric fog (#F3EFE6),
- * high-performance shadow settings, and coordinates camera, lighting, vehicle, and environment.
+ * The 3D stage.
+ *
+ * Quality is chosen once from the device, then owned by React so a demotion
+ * from the runtime FPS monitor rebuilds the environment at the lower tier
+ * (fewer instances, smaller shadows, no post) without touching the story.
  */
-export function MainCanvas({ scrollProgress, mouseCoords }: MainCanvasProps) {
-  const [isMobile, setIsMobile] = useState(false);
+export function MainCanvas() {
+  const [tier, setTier] = useState<QualityTier>(() => detectQualityTier());
+  const [narrowViewport, setNarrowViewport] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < 900
+  );
+
+  const world = getWorld(tier);
+  const quality = QUALITY_PRESETS[tier];
 
   useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768);
+    world.setQuality(tier);
+  }, [world, tier]);
+
+  useEffect(() => {
+    world.onQualityChange = (next) => setTier((current) => (current === next ? current : next));
+    return () => {
+      world.onQualityChange = null;
     };
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
+  }, [world]);
+
+  useEffect(() => {
+    const onResize = () => setNarrowViewport(window.innerWidth < 900);
+    window.addEventListener('resize', onResize, { passive: true });
+    return () => window.removeEventListener('resize', onResize);
   }, []);
 
   return (
-    <div className="fixed inset-0 w-full h-full pointer-events-none z-0 overflow-hidden">
+    <div className="absolute inset-0 h-full w-full overflow-hidden" aria-hidden="true">
       <Canvas
-        shadows
-        dpr={isMobile ? [1, 1.5] : [1, 2]}
+        shadows={quality.shadows ? { type: quality.shadowType } : false}
+        dpr={quality.dpr}
         gl={{
-          antialias: true,
+          antialias: !quality.postProcessing,
           powerPreference: 'high-performance',
           stencil: false,
-          toneMapping: THREE.ACESFilmicToneMapping,
-          toneMappingExposure: 1.08,
+          depth: true,
         }}
-        camera={{
-          position: [3.2, 1.4, 8.2],
-          fov: 34,
-          near: 0.1,
-          far: 320,
-        }}
-        onCreated={({ gl, scene }) => {
+        camera={{ position: [19, 11.5, -9], fov: 32, near: 0.35, far: 2600 }}
+        onCreated={({ gl }) => {
           gl.toneMapping = THREE.ACESFilmicToneMapping;
-          gl.toneMappingExposure = 1.08;
-          // Calibrated daylight atmospheric fog in warm ivory #F3EFE6
-          scene.fog = new THREE.FogExp2('#F3EFE6', 0.0068);
+          gl.toneMappingExposure = 1.02;
         }}
       >
         <Suspense fallback={null}>
-          <SceneAnimator scrollProgress={scrollProgress} />
-          {/* 1. Cinematic Daylight Lighting Rig with Drei Environment & Contact Shadows */}
-          <LightingRig scrollProgress={scrollProgress} isMobile={isMobile} />
+          <WorldRunner narrowViewport={narrowViewport} />
+          <LightingRig quality={quality} />
 
-          {/* 2. Catmull-Rom Spline Camera Choreography */}
-          <CameraController
-            scrollProgress={scrollProgress}
-            mouseCoords={mouseCoords}
-            isMobile={isMobile}
-          />
+          {/* A small baked studio probe: gives the chrome, glass and wet
+              asphalt something to reflect without downloading an HDRI. */}
+          <Environment resolution={128} frames={1} environmentIntensity={0.3}>
+            <Lightformer intensity={2.4} position={[0, 6, 0]} scale={[12, 12, 1]} rotation={[-Math.PI / 2, 0, 0]} />
+            <Lightformer intensity={0.9} position={[-6, 2, 4]} scale={[8, 6, 1]} color="#9DB6CC" />
+            <Lightformer intensity={0.7} position={[6, 2, -4]} scale={[8, 6, 1]} color="#D9C7A8" />
+            <Lightformer intensity={0.35} position={[0, -4, 0]} scale={[14, 14, 1]} rotation={[Math.PI / 2, 0, 0]} color="#3A3A38" />
+          </Environment>
 
-          {/* 3. High-Detail Master Semi-Truck Vehicle Assembly */}
-          <TruckAssembly scrollProgress={scrollProgress} isMobile={isMobile} />
-
-          {/* 4. Complete Highway & Landscape Subsystems */}
-          <EnvironmentMaster scrollProgress={scrollProgress} isMobile={isMobile} />
-          
-          {/* 5. Post Processing Cinematic Effects */}
-          {!isMobile && (
-            <EffectComposer multisampling={4}>
-              <DepthOfField focusDistance={0.015} focalLength={0.05} bokehScale={3} height={480} />
-              <Bloom luminanceThreshold={1.2} mipmapBlur intensity={0.5} />
-              <Vignette eskil={false} offset={0.05} darkness={0.8} />
-            </EffectComposer>
-          )}
+          <TruckRig quality={quality} />
+          <EnvironmentRoot quality={quality} />
+          <PostFX quality={quality} />
         </Suspense>
       </Canvas>
     </div>
